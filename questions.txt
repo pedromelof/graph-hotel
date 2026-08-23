@@ -1,0 +1,32 @@
+{
+  "query": "Qual a média de ocupação no mês atual?",
+  "top_k": 5
+}
+{
+  "query": "Em quais dias a média de ocupação foi maior que 50%?",
+  "top_k": 5
+}
+{
+  "query": "Em quais dias a pct_uh_total foi maior que 50%?",
+  "top_k": 5
+}
+{
+  "query": "Quais dias tiveram a menor quantidade de UHs indisponiveis?",
+  "top_k": 5
+}
+{
+  "query": "Quais dias tiveram a maior quantidade de UHs bloqueadas?",
+  "top_k": 5
+}
+{
+  "query": "Quais dias tiveram a maior quantidade de UHs em manutenção",
+  "top_k": 5
+}
+{
+  "query": "Em qual período do ano as crianças mais se hospedam no hotel?",
+  "top_k": 5
+}
+{
+  "query": "Quais foram os dias com maior diária média?",
+  "top_k": 5
+}
