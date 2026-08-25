@@ -1,7 +1,14 @@
 import os
 import json
+from decimal import Decimal
 import psycopg
 from utils.config import settings
+
+
+def _json_default(obj):
+    if isinstance(obj, Decimal):
+        return float(obj)
+    return str(obj)
 
 QUERY = """
 WITH params AS (
@@ -276,7 +283,7 @@ def main():
                     count = 0
                     for row in cur:
                         record = dict(zip(columns, row))
-                        f.write(json.dumps(record, default=str, ensure_ascii=False) + "\n")
+                        f.write(json.dumps(record, default=_json_default, ensure_ascii=False) + "\n")
                         count += 1
                         if count % 100 == 0:
                             print(f"  {count} linhas extraídas...")

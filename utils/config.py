@@ -31,6 +31,13 @@ class Settings:
     # Audit
     audit_log_path: str = os.getenv("AUDIT_LOG_PATH", "data/audit_log.jsonl")
 
+    # CORS (origens permitidas, separadas por vírgula)
+    cors_origins: tuple[str, ...] = tuple(
+        origin.strip()
+        for origin in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
+        if origin.strip()
+    )
+
     # GraphSAGE (docs/graphsage-roadmap.md)
     graphsage_model_path:  str   = os.getenv("GRAPHSAGE_MODEL_PATH", "data/models/graphsage")
     graphsage_hidden_dim:  int   = int(os.getenv("GRAPHSAGE_HIDDEN_DIM", "128"))

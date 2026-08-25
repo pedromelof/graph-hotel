@@ -51,6 +51,7 @@ CAMPOS_NUMERICOS = {
 
 OPERADORES_CYPHER = {">": ">", ">=": ">=", "<": "<", "<=": "<=", "=": "="}
 
+
 def _to_float(valor):
     if valor is None or isinstance(valor, float):
         return valor
@@ -65,8 +66,6 @@ MERGE (e1)-[:PROXIMO_DIA]->(e2)
 RETURN count(*) AS total
 """
 
-# Evento não guarda data/periodo como propriedade própria (só via NA_DATA/NO_PERIODO
-# acima) — por isso o join com Data/Periodo aqui.
 FETCH_EVENTOS_EXPORT = """
 MATCH (e:Evento)-[:NA_DATA]->(d:Data)
 RETURN elementId(e) AS eid, e.id AS id, d.data AS data, e.periodo AS periodo, properties(e) AS props
@@ -230,6 +229,8 @@ class GraphManager:
             ORDER BY d.data DESC
             LIMIT $top_k
             """
+            print(cypher)
+            print(params)
             result = session.run(cypher, **params)
             return [dict(record["props"]) for record in result]
 
