@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from api.schemas import QueryIn, QueryOut
+from api.schemas import AnswerOut, QueryIn
 from graph.graph import GraphManager
 from IA.embeddings import get_embeddings
 from IA.intent import escolher_retriever, resolver_parametros
+from IA.llm import gerar_resposta
+from utils.audit import registrar_auditoria
 from utils.config import settings
 
 router = APIRouter()
@@ -47,13 +49,26 @@ def _run_hibrido(gm: GraphManager, params: dict, query: str, top_k: int) -> list
     )
 
 
-@router.post("/query", response_model=QueryOut)
-def query_eventos(payload: QueryIn) -> QueryOut:
+def _run_agregado(gm: GraphManager, params: dict) -> list[dict]:
+    return gm.agregar_eventos(
+        agregacoes=params["agregacoes"],
+        data_inicio=params["data_inicio"],
+        data_fim=params["data_fim"],
+        periodo=params["periodo"],
+        condicoes=params["condicoes"],
+    )
+
+
+@router.post("/query", response_model=AnswerOut)
+def query_eventos(payload: QueryIn) -> AnswerOut:
     if not payload.query.strip():
         raise HTTPException(status_code=400, detail="query não pode ser vazia")
 
     retriever = escolher_retriever(payload.query)
     params = resolver_parametros(payload.query, retriever)
+
+    print(f'retriever: {retriever}')
+    print(f'params: {params}')
 
     gm = GraphManager(
         settings.neo4j_uri,
@@ -64,25 +79,34 @@ def query_eventos(payload: QueryIn) -> QueryOut:
 
     try:
         if retriever == "cypher_temporal":
-            eventos = _run_temporal(gm, params, payload.top_k)
+            dados = _run_temporal(gm, params, payload.top_k)
         elif retriever == "cypher_estrutural":
-            eventos = _run_estrutural(gm, params, payload.top_k)
+            dados = _run_estrutural(gm, params, payload.top_k)
         elif retriever == "vector_retriever":
-            eventos = _run_vector(gm, params, payload.query, payload.top_k)
+            dados = _run_vector(gm, params, payload.query, payload.top_k)
+        elif retriever == "cypher_agregado":
+            dados = _run_agregado(gm, params)
         else:  # cypher_hibrido_com_embedding
-            eventos = _run_hibrido(gm, params, payload.query, payload.top_k)
+            dados = _run_hibrido(gm, params, payload.query, payload.top_k)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         gm.close()
 
-    return QueryOut(
-        query=payload.query,
-        tipo=retriever,
-        retriever=retriever,
-        data_inicio=params["data_inicio"] if retriever in ("cypher_temporal", "cypher_hibrido_com_embedding") else None,
-        data_fim=params["data_fim"] if retriever in ("cypher_temporal", "cypher_hibrido_com_embedding") else None,
-        periodo=params["periodo"] if retriever in ("cypher_temporal", "cypher_hibrido_com_embedding") else None,
-        condicoes=params["condicoes"] if retriever in ("cypher_estrutural", "cypher_hibrido_com_embedding") else [],
-        resultados=[_strip_embedding(e) for e in eventos],
-    )
+    resultados = [_strip_embedding(e) for e in dados]
+
+    registrar_auditoria({
+        "query": payload.query,
+        "retriever": retriever,
+        "data_inicio": params["data_inicio"],
+        "data_fim": params["data_fim"],
+        "periodo": params["periodo"],
+        "condicoes": params["condicoes"],
+        "agregacoes": params["agregacoes"],
+        "semantic_query": params["semantic_query"],
+        "resultados": resultados,
+    })
+
+    resposta = gerar_resposta(payload.query, resultados)
+
+    return AnswerOut(query=payload.query, resposta=resposta)

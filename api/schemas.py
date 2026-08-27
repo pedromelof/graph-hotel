@@ -23,3 +23,8 @@ class QueryOut(BaseModel):
     periodo: str | None
     condicoes: list[Condicao]
     resultados: list[dict]
+
+
+class AnswerOut(BaseModel):
+    query: str
+    resposta: str

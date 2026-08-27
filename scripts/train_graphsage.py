@@ -64,7 +64,7 @@ def main(
         out_channels=out_channels,
         num_layers=num_layers,
         dropout=dropout,
-    )
+    ) 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     best_val_auc = -1.0

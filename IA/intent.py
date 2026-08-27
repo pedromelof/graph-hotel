@@ -59,13 +59,31 @@ _CAMPO_PATTERNS: list[tuple[str, str]] = [
     ("ocupados", r"\bocupados\b|\bocupa[çc][ãa]o\b"),
 ]
 
+_AGREGACAO_PATTERNS: list[tuple[str, str]] = [
+    ("avg", r"m[ée]dia|m[ée]dio"),
+    ("sum", r"\bsoma\b|\bsomat[óo]rio\b|\btotal\b"),
+    ("count", r"\bquantos\b|\bquantas\b|\bquantidade\b|\bn[úu]mero\s+de\b"),
+    ("max", r"\bm[áa]ximo\b|\bmaior\s+valor\b|\bpico\b"),
+    ("min", r"\bm[íi]nimo\b|\bmenor\s+valor\b"),
+]
 
-def detectar_campo(texto: str) -> str | None:
+
+def detectar_agregacoes(texto: str) -> list[str]:
     q = texto.lower()
+    funcoes = []
+    for funcao, pattern in _AGREGACAO_PATTERNS:
+        if re.search(pattern, q) and funcao not in funcoes:
+            funcoes.append(funcao)
+    return funcoes
+
+
+def detectar_campos(texto: str) -> list[str]:
+    q = texto.lower()
+    campos = []
     for campo, pattern in _CAMPO_PATTERNS:
-        if re.search(pattern, q):
-            return campo
-    return None
+        if re.search(pattern, q) and campo not in campos:
+            campos.append(campo)
+    return campos
 
 
 def analisar_intencao(pergunta: str) -> dict:
@@ -94,6 +112,9 @@ def analisar_intencao(pergunta: str) -> dict:
 
 
 def escolher_retriever(pergunta: str) -> str:
+    if detectar_agregacoes(pergunta):
+        return "cypher_agregado"
+
     intent = analisar_intencao(pergunta)
     if intent["tipo"] == IntentType.TEMPORAL:
         return "cypher_temporal"
@@ -109,7 +130,9 @@ def escolher_retriever(pergunta: str) -> str:
 EXTRACTION_PROMPT = """\
 Você extrai parâmetros de busca de uma pergunta sobre ocupação hoteleira, \
 para consultar um grafo Neo4j com nós `Evento` ligados a `Data` (propriedade `data`, \
-YYYY-MM-DD) e `Periodo` (propriedade `nome`, ex: "Manhã", "Tarde", "Noite").
+YYYY-MM-DD). `periodo` NÃO é um nó, é uma propriedade simples de `Evento` \
+(e.periodo) — não é um campo prioritário do domínio, então só preencha se o \
+usuário citar um valor de período explicitamente; na dúvida, deixe null.
 
 `Evento` tem estes campos numéricos (use EXATAMENTE este nome no campo "campo"):
 - ocupados: quantidade de UHs ocupadas
@@ -136,23 +159,31 @@ Data de referência para resolver expressões relativas ("hoje", "essa semana", 
 
 Tipo de busca já identificado (por regex, antes desta etapa): **{retriever_type}**
 
-Campo numérico já identificado por regex nesta pergunta (se houver): {campo_sugerido}. \
-Se a pergunta tiver comparação numérica, use ESSE nome de campo exatamente como veio, \
-não invente outro nem traduza.
+Campo(s) numérico(s) já identificado(s) por regex nesta pergunta (se houver): {campo_sugerido}. \
+Se a pergunta tiver comparação(ões) numérica(s), use ESSES nomes de campo exatamente como vieram \
+(um por condição), não invente outro nem traduza.
+
+Função(ões) de agregação já identificada(s) por regex nesta pergunta (se houver): {funcao_sugerida}. \
+Se a pergunta pedir média/soma/contagem/máximo/mínimo de algum campo, preencha "agregacoes" \
+usando ESSAS funções (nomes exatamente "avg", "sum", "count", "max" ou "min") combinadas com \
+o campo numérico correspondente da lista acima.
 
 Extraia:
 - data_inicio / data_fim (YYYY-MM-DD, resolvendo expressões relativas pela data de referência; null se não houver recorte de data)
-- periodo (nome exato do Periodo mencionado — "Manhã"/"Tarde"/"Noite" etc.; null se não mencionado)
+- periodo (valor exato de periodo mencionado pelo usuário; null se não mencionado — não é prioritário, não invente)
 - condicoes: lista de comparações numéricas encontradas na pergunta, cada uma como \
 {{"campo": "<um dos nomes acima>", "operador": "> | >= | < | <= | =", "valor": <número>}}. \
 A pergunta pode ter MAIS DE UMA comparação (ex: "receita maior que 50000 e ocupados maior \
 que 70" gera DUAS condições na lista). Lista vazia se não houver comparação numérica. \
 Todas as condições da lista são combinadas com E (AND).
+- agregacoes: lista de agregações pedidas, cada uma como \
+{{"funcao": "avg | sum | count | max | min", "campo": "<um dos nomes acima>"}}. \
+Lista vazia se a pergunta não pedir nenhuma agregação.
 - semantic_query (texto curto em português com os termos descritivos da pergunta, para busca \
 por similaridade; preencha quando a pergunta pedir algo descritivo/comparativo/de tendência; senão null)
 
-Preencha só o que fizer sentido pra pergunta — não invente data, período ou comparação \
-numérica que não estejam implícitos no texto.
+Preencha só o que fizer sentido pra pergunta — não invente data, período, comparação \
+numérica ou agregação que não estejam implícitos no texto.
 
 Retorne APENAS o JSON abaixo, sem markdown, sem texto fora das chaves:
 {{
@@ -161,6 +192,9 @@ Retorne APENAS o JSON abaixo, sem markdown, sem texto fora das chaves:
   "periodo": "string ou null",
   "condicoes": [
     {{"campo": "string", "operador": "> | >= | < | <= | =", "valor": 0}}
+  ],
+  "agregacoes": [
+    {{"funcao": "avg | sum | count | max | min", "campo": "string"}}
   ],
   "semantic_query": "string ou null"
 }}
@@ -175,20 +209,22 @@ def resolver_parametros(query: str, retriever_type: str) -> dict:
 
     from IA.llm import extract_json, llm_generate
 
-    campo_sugerido = detectar_campo(query)
+    campos_sugeridos = detectar_campos(query)
+    funcoes_sugeridas = detectar_agregacoes(query)
 
     prompt = EXTRACTION_PROMPT.format(
         query=query,
         retriever_type=retriever_type,
         data_referencia=date.today().isoformat(),
-        campo_sugerido=campo_sugerido or "nenhum campo óbvio identificado"
+        campo_sugerido=", ".join(campos_sugeridos) if campos_sugeridos else "nenhum campo óbvio identificado",
+        funcao_sugerida=", ".join(funcoes_sugeridas) if funcoes_sugeridas else "nenhuma agregação óbvia identificada",
     )
     raw = llm_generate(prompt)
     json_str = extract_json(raw)
 
     vazio = {
         "data_inicio": None, "data_fim": None, "periodo": None,
-        "condicoes": [], "semantic_query": query,
+        "condicoes": [], "agregacoes": [], "semantic_query": query,
     }
     if not json_str:
         return vazio
@@ -203,10 +239,19 @@ def resolver_parametros(query: str, retriever_type: str) -> dict:
         if campo and operador and valor is not None:
             condicoes.append({"campo": campo, "operador": operador, "valor": valor})
 
+    agregacoes = []
+    for agg in parsed.get("agregacoes") or []:
+        if not isinstance(agg, dict):
+            continue
+        funcao, campo = agg.get("funcao"), agg.get("campo")
+        if funcao and campo:
+            agregacoes.append({"funcao": funcao, "campo": campo})
+
     return {
         "data_inicio": parsed.get("data_inicio") or None,
         "data_fim": parsed.get("data_fim") or None,
         "periodo": parsed.get("periodo") or None,
         "condicoes": condicoes,
+        "agregacoes": agregacoes,
         "semantic_query": parsed.get("semantic_query") or None,
     }

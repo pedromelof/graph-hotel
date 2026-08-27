@@ -51,6 +51,8 @@ CAMPOS_NUMERICOS = {
 
 OPERADORES_CYPHER = {">": ">", ">=": ">=", "<": "<", "<=": "<=", "=": "="}
 
+FUNCOES_AGREGACAO_CYPHER = {"avg": "avg", "sum": "sum", "count": "count", "max": "max", "min": "min"}
+
 
 def _to_float(valor):
     if valor is None or isinstance(valor, float):
@@ -60,8 +62,7 @@ def _to_float(valor):
 BUILD_PROXIMO_DIA = """
 MATCH (e1:Evento)-[:NA_DATA]->(d1:Data)
 MATCH (e2:Evento)-[:NA_DATA]->(d2:Data)
-WHERE e1.periodo = e2.periodo
-  AND date(d2.data) = date(d1.data) + duration('P1D')
+WHERE date(d2.data) = date(d1.data) + duration('P1D')
 MERGE (e1)-[:PROXIMO_DIA]->(e2)
 RETURN count(*) AS total
 """
@@ -173,15 +174,8 @@ class GraphManager:
             )
             return [{**dict(record["props"]), "score": record["score"]} for record in result]
 
-    def search_eventos(
-        self,
-        data_inicio=None,
-        data_fim=None,
-        periodo=None,
-        condicoes=None,
-        embedding=None,
-        top_k=10,
-    ):
+    @staticmethod
+    def _build_where(data_inicio=None, data_fim=None, periodo=None, condicoes=None):
         where_partes = [
             "($data_inicio IS NULL OR d.data >= $data_inicio)",
             "($data_fim IS NULL OR d.data <= $data_fim)",
@@ -191,7 +185,6 @@ class GraphManager:
             "data_inicio": data_inicio,
             "data_fim": data_fim,
             "periodo": periodo,
-            "top_k": top_k,
         }
 
         for i, cond in enumerate(condicoes or []):
@@ -206,7 +199,19 @@ class GraphManager:
             where_partes.append(f"e.{campo} {OPERADORES_CYPHER[operador]} ${pname}")
             params[pname] = valor
 
-        where_clause = " AND ".join(where_partes)
+        return " AND ".join(where_partes), params
+
+    def search_eventos(
+        self,
+        data_inicio=None,
+        data_fim=None,
+        periodo=None,
+        condicoes=None,
+        embedding=None,
+        top_k=10,
+    ):
+        where_clause, params = self._build_where(data_inicio, data_fim, periodo, condicoes)
+        params["top_k"] = top_k
 
         with self._driver.session(database=self._database) as session:
             if embedding is not None:
@@ -233,6 +238,47 @@ class GraphManager:
             print(params)
             result = session.run(cypher, **params)
             return [dict(record["props"]) for record in result]
+
+    def agregar_eventos(
+        self,
+        agregacoes,
+        data_inicio=None,
+        data_fim=None,
+        periodo=None,
+        condicoes=None,
+    ):
+        agregacoes = agregacoes or []
+        if not agregacoes:
+            raise ValueError("Nenhuma agregação informada")
+
+        for agg in agregacoes:
+            campo = agg.get("campo")
+            funcao = agg.get("funcao")
+            if campo not in CAMPOS_NUMERICOS:
+                raise ValueError(f"Campo inválido: {campo}")
+            if funcao not in FUNCOES_AGREGACAO_CYPHER:
+                raise ValueError(f"Função de agregação inválida: {funcao}")
+
+        where_clause, params = self._build_where(data_inicio, data_fim, periodo, condicoes)
+
+        return_partes = [
+            f"{FUNCOES_AGREGACAO_CYPHER[agg['funcao']]}(e.{agg['campo']}) AS agg_{i}"
+            for i, agg in enumerate(agregacoes)
+        ]
+
+        cypher = f"""
+        MATCH (e:Evento)-[:NA_DATA]->(d:Data)
+        WHERE {where_clause}
+        RETURN {", ".join(return_partes)}
+        """
+
+        with self._driver.session(database=self._database) as session:
+            record = session.run(cypher, **params).single()
+
+        return [
+            {"funcao": agg["funcao"], "campo": agg["campo"], "valor": record[f"agg_{i}"]}
+            for i, agg in enumerate(agregacoes)
+        ]
 
     def build_proximo_dia_edges(self) -> int:
         with self._driver.session(database=self._database) as session:
